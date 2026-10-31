@@ -82,7 +82,7 @@ def main():
     # Run the action
     try:
         print(f"Processing '{args.input}'...")
-        action_func(args.input, output, password)
+        action_func(args.input, output, password, show_progress=True)
         print(f"Success! Output written to '{output}'")
     except ValueError as e:
         print(f"\nError: {e}", file=sys.stderr)

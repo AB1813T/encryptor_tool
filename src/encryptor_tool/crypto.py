@@ -5,6 +5,7 @@ import struct
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from tqdm import tqdm
 
 from .constants import ALGO_AES_GCM, BASE_NONCE_SIZE, CHUNK_SIZE, MAGIC, VERSION
 from .kdf import derive_key, generate_salt
@@ -39,7 +40,7 @@ def _parse_header(header_bytes: bytes):
     return salt, base_nonce
 
 
-def encrypt_file(input_path: str, output_path: str, password: str):
+def encrypt_file(input_path: str, output_path: str, password: str, show_progress: bool = False):
     """Encrypts a file using chunked AES-256-GCM."""
     salt = generate_salt()
     base_nonce = os.urandom(BASE_NONCE_SIZE)
@@ -51,48 +52,57 @@ def encrypt_file(input_path: str, output_path: str, password: str):
     # Write to a temporary file first (Atomic Write)
     temp_path = output_path + ".tmp"
 
+    # Get file size for the progress bar
+    total_size = os.path.getsize(input_path)
+
     try:
         with open(input_path, "rb") as f_in, open(temp_path, "wb") as f_out:
             # 1. Write the unencrypted header
             f_out.write(header)
 
             chunk_index = 0
-            while True:
-                # Read a 64KB chunk
-                plaintext_chunk = f_in.read(CHUNK_SIZE)
 
-                # If the file is empty, we still process the final chunk
-                if not plaintext_chunk and chunk_index > 0:
-                    break
+            # Wrap the loop in tqdm!
+            with tqdm(total=total_size, unit='B', unit_scale=True, desc="Encrypting", disable=not show_progress) as pbar:
+                while True:
+                    # Read a 64KB chunk
+                    plaintext_chunk = f_in.read(CHUNK_SIZE)
 
-                # Check if this is the last chunk
-                next_chunk = f_in.read(1)
-                is_final = len(next_chunk) == 0
+                    # If the file is empty, we still process the final chunk
+                    if not plaintext_chunk and chunk_index > 0:
+                        break
 
-                # If we read a byte, we need to seek back so we don't lose it
-                if not is_final:
-                    f_in.seek(-1, 1)
+                    # Check if this is the last chunk
+                    next_chunk = f_in.read(1)
+                    is_final = len(next_chunk) == 0
 
-                # If this is the final chunk, append the anti-truncation marker
-                if is_final:
-                    plaintext_chunk += b"FINAL"
+                    # If we read a byte, we need to seek back so we don't lose it
+                    if not is_final:
+                        f_in.seek(-1, 1)
 
-                # Construct the 12-byte nonce (8-byte base + 4-byte counter)
-                nonce = base_nonce + struct.pack(">I", chunk_index)
+                    # If this is the final chunk, append the anti-truncation marker
+                    if is_final:
+                        plaintext_chunk += b"FINAL"
 
-                # Encrypt the chunk, passing the header as Associated Authenticated Data (AAD)
-                ciphertext = aesgcm.encrypt(nonce, plaintext_chunk, header)
+                    # Construct the 12-byte nonce (8-byte base + 4-byte counter)
+                    nonce = base_nonce + struct.pack(">I", chunk_index)
 
-                # Write: 4-byte length + 12-byte nonce + ciphertext
-                # (Note: the 16-byte GCM tag is automatically appended to the ciphertext)
-                f_out.write(struct.pack(">I", len(ciphertext)))
-                f_out.write(nonce)
-                f_out.write(ciphertext)
+                    # Encrypt the chunk, passing the header as Associated Authenticated Data (AAD)
+                    ciphertext = aesgcm.encrypt(nonce, plaintext_chunk, header)
 
-                chunk_index += 1
+                    # Write: 4-byte length + 12-byte nonce + ciphertext
+                    # (Note: the 16-byte GCM tag is automatically appended to the ciphertext)
+                    f_out.write(struct.pack(">I", len(ciphertext)))
+                    f_out.write(nonce)
+                    f_out.write(ciphertext)
 
-                if is_final:
-                    break
+                    # Update the progress bar by the size of the chunk we just read
+                    pbar.update(len(plaintext_chunk) if not is_final else len(plaintext_chunk) - 5)
+
+                    chunk_index += 1
+
+                    if is_final:
+                        break
 
         # Atomic replace (overwrites if it exists)
         os.replace(temp_path, output_path)
@@ -104,9 +114,12 @@ def encrypt_file(input_path: str, output_path: str, password: str):
         raise 
 
 
-def decrypt_file(input_path: str, output_path: str, password: str):
+def decrypt_file(input_path: str, output_path: str, password: str, show_progress: bool = False):
     """Decrypts a file using chunked AES-256-GCM."""
     temp_path = output_path + ".tmp"
+
+    # Get file size for the progress bar
+    total_size = os.path.getsize(input_path)
 
     try:
         with open(input_path, "rb") as f_in:
@@ -121,47 +134,52 @@ def decrypt_file(input_path: str, output_path: str, password: str):
             with open(temp_path, "wb") as f_out:
                 chunk_index = 0
 
-                while True:
-                    # Read 4-byte chunk length
-                    length_bytes = f_in.read(4)
-                    if not length_bytes:
-                        raise ValueError(
-                            "File truncated unexpectedly (missing final chunk)"
-                        )
+                # Wrap the loop in tqdm!
+                with tqdm(total=total_size, unit='B', unit_scale=True, desc="Decrypting", disable=not show_progress) as pbar:
+                    while True:
+                        # Read 4-byte chunk length
+                        length_bytes = f_in.read(4)
+                        if not length_bytes:
+                            raise ValueError(
+                                "File truncated unexpectedly (missing final chunk)"
+                            )
 
-                    chunk_length = struct.unpack(">I", length_bytes)[0]
+                        chunk_length = struct.unpack(">I", length_bytes)[0]
 
-                    # Read the 12-byte nonce and the rest of the ciphertext
-                    nonce = f_in.read(12)
-                    ciphertext = f_in.read(chunk_length)
+                        # Read the 12-byte nonce and the rest of the ciphertext
+                        nonce = f_in.read(12)
+                        ciphertext = f_in.read(chunk_length)
 
-                    if len(ciphertext) != chunk_length:
-                        raise ValueError(
-                            "File truncated unexpectedly during chunk read"
-                        )
+                        if len(ciphertext) != chunk_length:
+                            raise ValueError(
+                                "File truncated unexpectedly during chunk read"
+                            )
 
-                    # Verify expected nonce matches the chunk index (prevents reordering)
-                    expected_nonce = base_nonce + struct.pack(">I", chunk_index)
-                    if nonce != expected_nonce:
-                        raise ValueError("Chunk reordering detected!")
+                        # Verify expected nonce matches the chunk index (prevents reordering)
+                        expected_nonce = base_nonce + struct.pack(">I", chunk_index)
+                        if nonce != expected_nonce:
+                            raise ValueError("Chunk reordering detected!")
 
-                    try:
-                        # Decrypt the chunk (verifies the auth tag automatically)
-                        plaintext_chunk = aesgcm.decrypt(nonce, ciphertext, header)
-                    except InvalidTag:
-                        raise ValueError(
-                            "Authentication failed: Wrong password or file has been tampered with."
-                        )
+                        try:
+                            # Decrypt the chunk (verifies the auth tag automatically)
+                            plaintext_chunk = aesgcm.decrypt(nonce, ciphertext, header)
+                        except InvalidTag:
+                            raise ValueError(
+                                "Authentication failed: Wrong password or file has been tampered with."
+                            )
 
-                    # Check for the anti-truncation marker
-                    if plaintext_chunk.endswith(b"FINAL"):
-                        # Remove the marker and write the final data
-                        f_out.write(plaintext_chunk[:-5])
-                        break  # Reached the true end of the file
-                    else:
-                        f_out.write(plaintext_chunk)
+                        # Check for the anti-truncation marker
+                        if plaintext_chunk.endswith(b"FINAL"):
+                            # Remove the marker and write the final data
+                            f_out.write(plaintext_chunk[:-5])
+                            break  # Reached the true end of the file
+                        else:
+                            f_out.write(plaintext_chunk)
 
-                    chunk_index += 1
+                        # Update progress by the chunk read + 16 bytes overhead
+                        pbar.update(4 + 12 + chunk_length)
+
+                        chunk_index += 1
 
         # Atomic replace
         os.replace(temp_path, output_path)
