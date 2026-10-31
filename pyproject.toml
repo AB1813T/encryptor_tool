@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "encryptor_tool"
+version = "0.1.0"
+description = "CLI tool for authenticated file encryption using AES-256-GCM with Argon2id key derivation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "AB1813T", email = "riveera.ab1813t@gmail.com" }]
+
+[project.scripts]
+encryptor-tool = "encryptor_tool.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/encryptor_tool"]

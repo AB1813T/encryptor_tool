@@ -23,4 +23,6 @@ Thumbs.db
 
 # Local test artifacts
 *.enc
+*.dec
 test_files/
+
