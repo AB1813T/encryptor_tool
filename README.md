@@ -43,10 +43,18 @@ Decrypt a file:
 encryptor-tool decrypt my_secret_document.pdf.enc
 # Output: my_secret_document.pdf
 
+Overwrite an existing file:
+By default, the tool will not overwrite existing files to prevent accidental data loss.
 
 Use -f or --force to overwrite an existing file:
 encryptor-tool decrypt my_secret_document.pdf.enc -f
 
+Securely shred the original file:
+Add the -s or --shred flag to overwrite the source file with random data 3 times before deleting it. This works for both encryption (destroys plaintext) and decryption (destroys ciphertext).
+
+
+encryptor-tool encrypt my_secret_document.pdf --shred
+encryptor-tool decrypt my_secret_document.pdf.enc --shred
 
 🧪 Testing
 This project uses pytest to verify the cryptographic properties, including successful roundtrips, wrong-password rejection, and tamper detection.
