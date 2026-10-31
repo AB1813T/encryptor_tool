@@ -188,3 +188,36 @@ def decrypt_file(input_path: str, output_path: str, password: str, show_progress
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise 
+
+def shred_file(file_path: str, passes: int = 3):
+    """
+    Securely deletes a file by overwriting it with random data multiple times.
+    """
+    if not os.path.exists(file_path):
+        return
+
+    file_size = os.path.getsize(file_path)
+    if file_size == 0:
+        os.remove(file_path)
+        return
+
+    try:
+        # Open in r+b (read + write binary) mode
+        with open(file_path, "r+b") as f:
+            for _ in range(passes):
+                f.seek(0)
+                remaining = file_size
+                # Write in 1MB chunks to avoid memory issues on huge files
+                while remaining > 0:
+                    chunk_size = min(remaining, 1024 * 1024)
+                    f.write(os.urandom(chunk_size))
+                    remaining -= chunk_size
+                # Force the OS to write the data to the disk immediately
+                f.flush()
+                os.fsync(f.fileno())
+        
+        # Finally, delete the file
+        os.remove(file_path)
+    except Exception as e:
+        # If shredding fails, don't crash the whole app, just warn the user
+        print(f"Warning: Could not fully shred '{file_path}': {e}")
